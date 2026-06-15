@@ -72,8 +72,14 @@ class CodeEmbedder:
         for i in range(0, len(texts), self.batch_size):
             batch = texts[i : i + self.batch_size]
             batch_num = i // self.batch_size + 1
-            if total_batches > 10 and batch_num % 10 == 0:
-                logger.info("embedding_progress", batch=batch_num, total=total_batches)
+            if total_batches > 10 and (batch_num % 10 == 0 or batch_num == total_batches):
+                percent = round((batch_num / total_batches) * 100, 1)
+                logger.info(
+                    "embedding_progress",
+                    batch=batch_num,
+                    total=total_batches,
+                    percent=percent,
+                )
             embeddings = self.model.encode(
                 batch,
                 show_progress_bar=False,
@@ -81,6 +87,8 @@ class CodeEmbedder:
                 batch_size=self.batch_size,
             )
             all_embeddings.append(embeddings)
+
+        logger.info("embedding_complete", batches=total_batches, texts=len(texts))
 
         return np.vstack(all_embeddings) if all_embeddings else np.array([])
 

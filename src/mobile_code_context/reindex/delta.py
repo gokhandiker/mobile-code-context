@@ -202,8 +202,11 @@ class DeltaReindexer:
         """Parse, chunk, embed, and store a batch of files."""
         all_chunks: list[CodeChunk] = []
         file_records: list[dict] = []
+        total_files = len(rel_paths)
 
-        for rel_path in rel_paths:
+        logger.info("parse_chunk_start", total_files=total_files)
+
+        for idx, rel_path in enumerate(rel_paths, start=1):
             abs_path = all_files[rel_path]
             try:
                 parsed = _parse_file(abs_path, rel_path, self.platform)
@@ -225,6 +228,19 @@ class DeltaReindexer:
             except Exception as e:
                 logger.warning("parse_failed", file=rel_path, error=str(e))
                 continue
+
+            # Emit periodic parse/chunk progress for large indexing runs.
+            if total_files > 20 and (idx % 100 == 0 or idx == total_files):
+                percent = round((idx / total_files) * 100, 1)
+                logger.info(
+                    "parse_chunk_progress",
+                    processed=idx,
+                    total=total_files,
+                    percent=percent,
+                    chunks=len(all_chunks),
+                )
+
+        logger.info("parse_chunk_complete", files=len(file_records), chunks=len(all_chunks))
 
         if not all_chunks:
             return
