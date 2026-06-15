@@ -52,8 +52,25 @@ class Settings(BaseSettings):
         default=0.02,
         description="Minimum fan-in ratio to consider a file as base architecture",
     )
+    mandatory_contract_min_ratio: float = Field(
+        default=0.005,
+        description="Relaxed fan-in ratio for architectural-contract roles "
+        "(base ViewModels, marker interfaces, MVI state/effect/action, extensions)",
+    )
     mandatory_max_base_files: int = Field(
         default=15, description="Maximum number of auto-detected base files"
+    )
+    mandatory_max_contract_files: int = Field(
+        default=12,
+        description="Additional budget for exemplar-dependency and supertype "
+        "contracts merged on top of fan-in base files",
+    )
+    mandatory_supertype_depth: int = Field(
+        default=2, description="How many inheritance levels to walk for supertype contracts"
+    )
+    mandatory_include_exemplar_deps: bool = Field(
+        default=True,
+        description="Include the exemplar module's dependency closure in mandatory context",
     )
     mandatory_max_lines_per_file: int = Field(
         default=100, description="Max lines per file in mandatory context"

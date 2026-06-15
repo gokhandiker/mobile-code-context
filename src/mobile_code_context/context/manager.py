@@ -18,7 +18,13 @@ from typing import Optional
 
 from mobile_code_context.config import Settings
 from mobile_code_context.context.extractor import extract_anchored_content
-from mobile_code_context.context.fan_in import FanInResult, analyze_fan_in
+from mobile_code_context.context.fan_in import (
+    FanInResult,
+    analyze_fan_in,
+    build_symbol_index,
+    resolve_exemplar_dependencies,
+    resolve_supertype_closure,
+)
 from mobile_code_context.context.vertical_slice import (
     VerticalSliceResult,
     find_best_exemplar,
@@ -83,24 +89,68 @@ class ContextManager:
         # Check if we have user-confirmed base files already
         has_user_data = bool(existing.get("user_additions") or existing.get("base_files"))
 
-        # Run fan-in analysis
+        # Build the symbol index once and reuse it across all analyses.
+        index = build_symbol_index(repo_path, self._platform)
+
+        # Run fan-in analysis (frequency ranking)
         fan_in_results = analyze_fan_in(
             repo_path,
             self._platform,
             max_results=self.settings.mandatory_max_base_files,
             min_ratio=self.settings.mandatory_fan_in_threshold,
+            contract_min_ratio=self.settings.mandatory_contract_min_ratio,
+            index=index,
         )
 
-        # Build base files list
+        # Find best exemplar (also feeds the dependency-closure analysis below).
+        exemplar = find_best_exemplar(repo_path, self._platform)
+        exemplar_files: list[str] = []
+        exemplar_module: Optional[str] = None
+        if exemplar:
+            exemplar_module = exemplar.module_path
+            exemplar_files = get_exemplar_files(repo_path, exemplar)
+
+        # Exemplar dependency closure — the contracts a new feature must conform
+        # to (base ViewModels, scoped services, MVI contracts, extensions) that
+        # plain frequency ranking tends to miss.
+        contract_results: list[FanInResult] = []
+        if self.settings.mandatory_include_exemplar_deps and exemplar_files:
+            contract_results.extend(
+                resolve_exemplar_dependencies(
+                    index,
+                    exemplar_files,
+                    max_results=self.settings.mandatory_max_contract_files,
+                )
+            )
+
+        # Transitive supertypes of fan-in + exemplar-dep files (e.g. a parent
+        # base class referenced only indirectly).
+        seed_paths = [r.file_path for r in fan_in_results] + [
+            r.file_path for r in contract_results
+        ]
+        if seed_paths:
+            contract_results.extend(
+                resolve_supertype_closure(
+                    index,
+                    seed_paths,
+                    depth=self.settings.mandatory_supertype_depth,
+                    max_results=self.settings.mandatory_max_contract_files,
+                )
+            )
+
+        # Build base files list — merge fan-in + contract signals, de-duped.
         base_files: list[dict] = []
+        seen_paths: set[str] = set()
         removed_paths = {r["file_path"] for r in existing.get("user_removals", [])}
 
-        for result in fan_in_results:
-            if result.file_path in removed_paths:
+        for result in fan_in_results + contract_results:
+            if result.file_path in removed_paths or result.file_path in seen_paths:
                 continue
+            seen_paths.add(result.file_path)
             base_files.append({
                 "file_path": result.file_path,
-                "source": "auto",
+                "source": result.source,
+                "role": result.role,
                 "fan_in": result.fan_in_count,
                 "confidence": result.confidence,
                 "confirmed": False,
@@ -109,10 +159,12 @@ class ContextManager:
         # Preserve user additions
         for addition in existing.get("user_additions", []):
             path = addition["file_path"]
-            if path not in removed_paths and not any(b["file_path"] == path for b in base_files):
+            if path not in removed_paths and path not in seen_paths:
+                seen_paths.add(path)
                 base_files.append({
                     "file_path": path,
                     "source": "user",
+                    "role": None,
                     "fan_in": 0,
                     "confidence": 1.0,
                     "confirmed": True,
@@ -125,15 +177,6 @@ class ContextManager:
         for bf in base_files:
             if bf["file_path"] in existing_confirmed:
                 bf["confirmed"] = True
-
-        # Find best exemplar
-        exemplar = find_best_exemplar(repo_path, self._platform)
-        exemplar_files: list[str] = []
-        exemplar_module: Optional[str] = None
-
-        if exemplar:
-            exemplar_module = exemplar.module_path
-            exemplar_files = get_exemplar_files(repo_path, exemplar)
 
         # Save
         data = {
