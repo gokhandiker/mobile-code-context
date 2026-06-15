@@ -77,18 +77,38 @@ class Engine:
             if result.get("base_files_changed", False):
                 await self._context_manager.build_mandatory_context(self.settings.repo_path)
 
+        # Reflect uncommitted/working-tree edits (cheap: only hashes dirty files).
+        if self.settings.reindex_dirty:
+            await self._reindexer.reindex_dirty_files()
+
     async def search_code(
-        self, query: str, top_k: int = 10, module_filter: Optional[str] = None
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+        module_filter: Optional[str] = None,
+        response_format: Optional[str] = None,
     ) -> str:
         """Semantic search over indexed code chunks."""
         from mobile_code_context.tools.search import format_search_results
 
+        if top_k is None:
+            top_k = self.settings.search_top_k
+        if response_format is None:
+            response_format = self.settings.search_response_format
+
         embedding = self._embedder.embed_query(query)
         results = self._store.search(embedding, top_k=top_k, module_filter=module_filter)
-        return format_search_results(results, query)
+        return format_search_results(
+            results,
+            query,
+            response_format=response_format,
+            preferred_prefix=self.settings.preferred_module_prefix,
+        )
 
-    async def get_architecture_context(self, include_exemplar: bool = True) -> str:
+    async def get_architecture_context(self, include_exemplar: Optional[bool] = None) -> str:
         """Return mandatory architecture context."""
+        if include_exemplar is None:
+            include_exemplar = self.settings.architecture_include_exemplar_default
         return self._context_manager.get_formatted_context(include_exemplar=include_exemplar)
 
     async def get_module_info(self, path: str) -> str:

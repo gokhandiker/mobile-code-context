@@ -6,6 +6,7 @@ Uses CodeRankEmbed for code-specific embeddings with batched generation.
 
 from __future__ import annotations
 
+import os
 import structlog
 from typing import Optional
 
@@ -45,10 +46,27 @@ class CodeEmbedder:
     def model(self) -> SentenceTransformer:
         """Lazy-load model on first use."""
         if self._model is None:
-            logger.info("loading_embedding_model", model=self.model_name, device=self._device)
-            self._model = SentenceTransformer(
-                self.model_name, device=self._device, trust_remote_code=True
+            offline = os.environ.get("HF_HUB_OFFLINE") in ("1", "true", "True")
+            logger.info(
+                "loading_embedding_model",
+                model=self.model_name,
+                device=self._device,
+                offline=offline,
             )
+            try:
+                self._model = SentenceTransformer(
+                    self.model_name, device=self._device, trust_remote_code=True
+                )
+            except Exception as exc:  # network / missing-cache / load failure
+                raise RuntimeError(
+                    f"Failed to load embedding model '{self.model_name}'. "
+                    "It is downloaded from Hugging Face on first use and cached "
+                    "locally. If you are offline, pre-download it once with network "
+                    "access (e.g. `huggingface-cli download "
+                    f"{self.model_name}`), or set MCC_EMBEDDING_MODEL to a locally "
+                    "available model path. Set HF_HUB_OFFLINE=1 to force cache-only "
+                    f"loading. Underlying error: {exc}"
+                ) from exc
             # Cap sequence length to reduce memory usage on CPU
             self._model.max_seq_length = 512
             logger.info("model_loaded", dim=self._model.get_embedding_dimension())

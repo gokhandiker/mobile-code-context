@@ -45,7 +45,53 @@ class Settings(BaseSettings):
     chunk_overlap_lines: int = Field(default=20, description="Overlap between chunks")
 
     # Search
-    search_top_k: int = Field(default=10, description="Default number of search results")
+    search_top_k: int = Field(default=5, description="Default number of search results")
+    search_response_format: str = Field(
+        default="concise",
+        description="Default search output verbosity: 'concise' (compact snippet) "
+        "or 'detailed' (larger snippet). Concise saves tokens.",
+    )
+    search_snippet_lines_concise: int = Field(
+        default=15, description="Max snippet lines per result in concise mode"
+    )
+    search_snippet_lines_detailed: int = Field(
+        default=50, description="Max snippet lines per result in detailed mode"
+    )
+
+    # Parallel-duplicate handling (generic / project-agnostic).
+    # When the same symbol is declared in 2+ top-level module roots (e.g. a
+    # multi-app Android repo or multi-target iOS project), results are collapsed
+    # to the single best copy and annotated. All settings default to neutral
+    # (no project-specific names baked in).
+    preferred_module_prefix: str = Field(
+        default="",
+        description="Optional module/path prefix to prefer when collapsing "
+        "duplicate symbols across parallel module roots (empty = pure relevance)",
+    )
+    exclude_module_prefixes: str = Field(
+        default="",
+        description="Comma-separated path prefixes to exclude from indexing "
+        "(e.g. a legacy/duplicated tree). Empty = index everything.",
+    )
+    include_module_prefixes: str = Field(
+        default="",
+        description="Comma-separated path-prefix allowlist for indexing. "
+        "Empty = no allowlist (index everything not excluded).",
+    )
+
+    # Working-tree freshness
+    reindex_dirty: bool = Field(
+        default=True,
+        description="Reindex uncommitted/working-tree changes (git status) on each "
+        "tool call so search reflects unsaved-to-git edits",
+    )
+
+    # Exemplar override
+    exemplar_module: str = Field(
+        default="",
+        description="Optional module path to pin as the architecture exemplar "
+        "(empty = auto-select the most complete feature module)",
+    )
 
     # Mandatory context
     mandatory_fan_in_threshold: float = Field(
@@ -78,6 +124,11 @@ class Settings(BaseSettings):
     mandatory_max_method_lines: int = Field(
         default=40, description="Max lines per method in anchored extraction"
     )
+    architecture_include_exemplar_default: bool = Field(
+        default=False,
+        description="Whether get_architecture_context includes the full exemplar "
+        "by default. False = base architecture only (fewer tokens); exemplar opt-in.",
+    )
 
     # Reindexing
     reindex_on_tool_call: bool = Field(
@@ -85,6 +136,16 @@ class Settings(BaseSettings):
     )
 
     model_config = {"env_prefix": "MCC_"}
+
+    @property
+    def exclude_module_prefixes_list(self) -> list[str]:
+        """Parsed, normalized exclude prefixes (forward-slash separated)."""
+        return [p.strip().strip("/") for p in self.exclude_module_prefixes.split(",") if p.strip()]
+
+    @property
+    def include_module_prefixes_list(self) -> list[str]:
+        """Parsed, normalized include (allowlist) prefixes."""
+        return [p.strip().strip("/") for p in self.include_module_prefixes.split(",") if p.strip()]
 
     @property
     def data_path(self) -> Path:

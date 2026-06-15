@@ -76,33 +76,92 @@ class VerticalSliceResult:
         return [l.layer_name for l in self.layers if not l.is_present]
 
 
+def _layer_defs_for(platform: PlatformInfo):
+    """Return (layer_defs, extensions) for the platform, or (None, None)."""
+    if Language.KOTLIN in platform.languages:
+        return _ANDROID_LAYERS, {".kt", ".kts"}
+    if Language.SWIFT in platform.languages:
+        return _IOS_LAYERS, {".swift"}
+    return None, None
+
+
+def _score_module(
+    repo_path: Path, module_path: str, layer_defs: dict, extensions: set[str]
+) -> VerticalSliceResult | None:
+    """Score a single module by architectural-layer coverage."""
+    abs_module = repo_path / module_path
+    if not abs_module.exists():
+        return None
+
+    all_files: list[str] = []
+    total_lines = 0
+    for root, dirs, files in os.walk(abs_module):
+        dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
+        for filename in files:
+            _, ext = os.path.splitext(filename)
+            if ext in extensions:
+                rel_path = str((Path(root) / filename).relative_to(repo_path))
+                all_files.append(rel_path)
+                try:
+                    lines = (Path(root) / filename).read_text(errors="replace").count("\n") + 1
+                    total_lines += lines
+                except OSError:
+                    pass
+
+    if not all_files:
+        return None
+
+    layers: list[LayerCoverage] = []
+    for layer_name, suffixes in layer_defs.items():
+        layer_files = [f for f in all_files if any(f.endswith(s) for s in suffixes)]
+        layers.append(LayerCoverage(layer_name=layer_name, files=layer_files))
+
+    return VerticalSliceResult(
+        module_path=module_path,
+        layers=layers,
+        total_files=len(all_files),
+        total_lines=total_lines,
+    )
+
+
 def find_best_exemplar(
     repo_path: Path,
     platform: PlatformInfo,
     max_exemplar_files: int = 12,
+    preferred_module: str = "",
 ) -> VerticalSliceResult | None:
     """Find the best feature module to use as architectural exemplar.
 
-    Scans feature modules and scores them by layer completeness.
-    Prefers smaller modules (fewer total lines) among equally-scored ones.
+    Scans feature modules and scores them by layer completeness. Among
+    equally-complete modules it prefers richer, more representative ones (more
+    files) rather than the smallest. A non-empty ``preferred_module`` pins the
+    exemplar to a specific module path when it resolves to real source files.
 
     Args:
         repo_path: Repository root
         platform: Detected platform info
         max_exemplar_files: Maximum files to include in exemplar
+        preferred_module: Optional module path to force as the exemplar
 
     Returns:
         Best scoring VerticalSliceResult, or None if no features found
     """
-    # Determine layer definitions
-    if Language.KOTLIN in platform.languages:
-        layer_defs = _ANDROID_LAYERS
-        extensions = {".kt", ".kts"}
-    elif Language.SWIFT in platform.languages:
-        layer_defs = _IOS_LAYERS
-        extensions = {".swift"}
-    else:
+    layer_defs, extensions = _layer_defs_for(platform)
+    if layer_defs is None:
         return None
+
+    # Explicit override wins when it resolves to a real module with sources.
+    if preferred_module:
+        forced = _score_module(repo_path, preferred_module.strip("/"), layer_defs, extensions)
+        if forced is not None:
+            logger.info(
+                "exemplar_pinned",
+                module=forced.module_path,
+                score=forced.score,
+                files=forced.total_files,
+            )
+            return forced
+        logger.warning("exemplar_override_unresolved", module=preferred_module)
 
     # Find feature modules
     feature_modules = [m for m in platform.modules if m.is_feature]
@@ -129,54 +188,17 @@ def find_best_exemplar(
 
     # Score each feature module
     results: list[VerticalSliceResult] = []
-
     for module in feature_modules:
-        module_path = repo_path / module.path
-        if not module_path.exists():
-            continue
-
-        # Collect all source files in module
-        all_files: list[str] = []
-        total_lines = 0
-
-        for root, dirs, files in os.walk(module_path):
-            dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
-            for filename in files:
-                _, ext = os.path.splitext(filename)
-                if ext in extensions:
-                    rel_path = str((Path(root) / filename).relative_to(repo_path))
-                    all_files.append(rel_path)
-                    try:
-                        lines = (Path(root) / filename).read_text(errors="replace").count("\n") + 1
-                        total_lines += lines
-                    except OSError:
-                        pass
-
-        if not all_files:
-            continue
-
-        # Check layer coverage
-        layers: list[LayerCoverage] = []
-        for layer_name, suffixes in layer_defs.items():
-            layer_files = [
-                f for f in all_files if any(f.endswith(s) for s in suffixes)
-            ]
-            layers.append(LayerCoverage(layer_name=layer_name, files=layer_files))
-
-        results.append(
-            VerticalSliceResult(
-                module_path=module.path,
-                layers=layers,
-                total_files=len(all_files),
-                total_lines=total_lines,
-            )
-        )
+        scored = _score_module(repo_path, module.path, layer_defs, extensions)
+        if scored is not None:
+            results.append(scored)
 
     if not results:
         return None
 
-    # Sort: highest score first, then smallest total_lines (compact exemplar)
-    results.sort(key=lambda r: (-r.score, r.total_lines))
+    # Sort: most complete first, then the richer (more files) module as a more
+    # representative exemplar — avoids picking a trivially small slice.
+    results.sort(key=lambda r: (-r.score, -r.total_files))
 
     best = results[0]
     logger.info(

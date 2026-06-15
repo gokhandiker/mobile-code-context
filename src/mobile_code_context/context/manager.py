@@ -36,6 +36,59 @@ from mobile_code_context.indexer.store import VectorStore
 logger = structlog.get_logger()
 
 
+def _dedup_parallel_base_files(
+    base_files: list[dict], index, preferred_prefix: str = ""
+) -> list[dict]:
+    """Collapse same-symbol contracts found in parallel module roots.
+
+    Generic / project-agnostic: when an auto-detected base file declares the
+    same primary symbol as another base file but they live in different
+    top-level module roots (e.g. duplicated trees in a multi-app/multi-target
+    repo), keep only one — preferring ``preferred_prefix`` when set, otherwise
+    the highest fan-in / confidence — so mandatory context isn't doubled.
+    """
+    from collections import defaultdict
+
+    def symbol_of(bf: dict) -> str:
+        fm = index.files.get(bf["file_path"]) if index else None
+        if fm and fm.type_symbols:
+            return sorted(fm.type_symbols)[0]
+        if fm and fm.symbols:
+            return sorted(fm.symbols)[0]
+        return Path(bf["file_path"]).stem
+
+    def root_of(bf: dict) -> str:
+        return bf["file_path"].replace("\\", "/").split("/", 1)[0]
+
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for bf in base_files:
+        groups[symbol_of(bf)].append(bf)
+
+    dropped: set[int] = set()
+    for _symbol, group in groups.items():
+        roots = {root_of(b) for b in group}
+        if len(roots) < 2:
+            continue
+
+        def rank(b: dict) -> tuple[int, float, float]:
+            preferred = bool(preferred_prefix) and b["file_path"].replace(
+                "\\", "/"
+            ).startswith(preferred_prefix)
+            return (
+                0 if preferred else 1,
+                -float(b.get("fan_in", 0)),
+                -float(b.get("confidence", 0.0)),
+            )
+
+        best = min(group, key=rank)
+        for b in group:
+            if b is not best:
+                dropped.add(id(b))
+
+    return [b for b in base_files if id(b) not in dropped]
+
+
+
 class ContextManager:
     """Manages mandatory architecture context with learning."""
 
@@ -103,7 +156,11 @@ class ContextManager:
         )
 
         # Find best exemplar (also feeds the dependency-closure analysis below).
-        exemplar = find_best_exemplar(repo_path, self._platform)
+        exemplar = find_best_exemplar(
+            repo_path,
+            self._platform,
+            preferred_module=self.settings.exemplar_module,
+        )
         exemplar_files: list[str] = []
         exemplar_module: Optional[str] = None
         if exemplar:
@@ -155,6 +212,12 @@ class ContextManager:
                 "confidence": result.confidence,
                 "confirmed": False,
             })
+
+        # Collapse same-symbol contracts duplicated across parallel module roots.
+        base_files = _dedup_parallel_base_files(
+            base_files, index, self.settings.preferred_module_prefix
+        )
+        seen_paths = {b["file_path"] for b in base_files}
 
         # Preserve user additions
         for addition in existing.get("user_additions", []):
@@ -247,6 +310,20 @@ class ContextManager:
                     continue
 
         formatted = "\n\n".join(sections)
+
+        # Footer hint so the agent knows how to get more / fewer tokens.
+        if formatted:
+            if include_exemplar:
+                formatted += (
+                    "\n\n=== [NOTE] Showing base architecture + full feature exemplar. "
+                    "Files are truncated for brevity; open a file directly for full content. ==="
+                )
+            else:
+                formatted += (
+                    "\n\n=== [NOTE] Base architecture only (token-efficient). "
+                    "Call get_architecture_context with include_exemplar=true to also see "
+                    "a complete feature exemplar slice. ==="
+                )
 
         if include_exemplar:
             self._formatted_context = formatted

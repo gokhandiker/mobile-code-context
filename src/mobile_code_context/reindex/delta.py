@@ -79,6 +79,25 @@ class DeltaReindexer:
             pass
         return None
 
+    def _is_in_scope(self, rel_path: str) -> bool:
+        """Apply optional include/exclude module-prefix scoping.
+
+        Generic and off by default: excludes any rel-path under an excluded
+        prefix, and (if an allowlist is configured) keeps only paths under it.
+        """
+        norm = rel_path.replace("\\", "/")
+        excludes = self.settings.exclude_module_prefixes_list
+        if excludes and any(
+            norm == p or norm.startswith(p + "/") for p in excludes
+        ):
+            return False
+        includes = self.settings.include_module_prefixes_list
+        if includes and not any(
+            norm == p or norm.startswith(p + "/") for p in includes
+        ):
+            return False
+        return True
+
     def _get_last_indexed_commit(self) -> Optional[str]:
         """Read last indexed commit from disk."""
         path = self.settings.last_commit_path
@@ -113,6 +132,95 @@ class DeltaReindexer:
             pass
         return None
 
+    def _get_dirty_files(self) -> set[str]:
+        """Return working-tree changes (staged, unstaged, untracked).
+
+        Uses ``git status --porcelain`` so that uncommitted edits are reflected
+        in the index even before they are committed. Filtered to indexable
+        extensions and the configured include/exclude scope.
+        """
+        try:
+            result = subprocess.run(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                cwd=self.settings.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return set()
+        if result.returncode != 0:
+            return set()
+
+        extensions = set(self.platform.extensions)
+        dirty: set[str] = set()
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                continue
+            # Porcelain v1: "XY <path>" (or "XY <old> -> <new>" for renames).
+            path = line[3:] if len(line) > 3 else line
+            if " -> " in path:
+                path = path.split(" -> ", 1)[1]
+            path = path.strip().strip('"')
+            _, ext = os.path.splitext(path)
+            if ext not in extensions:
+                continue
+            if not self._is_in_scope(path):
+                continue
+            dirty.add(path)
+        return dirty
+
+    async def reindex_dirty_files(self) -> dict:
+        """Reconcile only the working-tree (dirty) files against the index.
+
+        Cheap by design: it hashes just the porcelain set, not the whole repo,
+        so it can run on every tool call. New/changed dirty files are
+        re-embedded; deleted ones are dropped.
+        """
+        if not self.settings.reindex_dirty:
+            return {"status": "disabled"}
+
+        dirty = self._get_dirty_files()
+        if not dirty:
+            return {"status": "clean"}
+
+        stored_hashes = self.store.get_all_file_hashes()
+        repo_path = self.settings.repo_path
+        to_process: list[str] = []
+        to_remove: list[str] = []
+        targets: dict[str, Path] = {}
+
+        for rel_path in dirty:
+            abs_path = repo_path / rel_path
+            if not abs_path.exists():
+                if rel_path in stored_hashes:
+                    to_remove.append(rel_path)
+                continue
+            try:
+                current_hash = _file_hash(abs_path)
+            except OSError:
+                continue
+            if rel_path not in stored_hashes or stored_hashes[rel_path] != current_hash:
+                to_process.append(rel_path)
+                targets[rel_path] = abs_path
+
+        # Drop stale chunks before re-adding (and for deletions).
+        for rel_path in to_remove + to_process:
+            self.store.remove_by_file(rel_path)
+
+        if to_process:
+            await self._process_files(to_process, targets)
+
+        if to_process or to_remove:
+            logger.info(
+                "dirty_reindex", processed=len(to_process), removed=len(to_remove)
+            )
+        return {
+            "status": "reindexed_dirty",
+            "processed": len(to_process),
+            "removed": len(to_remove),
+        }
+
     async def run(self) -> dict:
         """Run incremental indexing.
 
@@ -142,6 +250,8 @@ class DeltaReindexer:
         all_files: dict[str, Path] = {}
         for file_path in scan_files(repo_path, self.platform):
             rel_path = get_relative_path(file_path, repo_path)
+            if not self._is_in_scope(rel_path):
+                continue
             all_files[rel_path] = file_path
 
         # Determine what changed

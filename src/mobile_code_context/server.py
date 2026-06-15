@@ -44,9 +44,14 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="search_code",
             description=(
-                "Semantic search over the indexed codebase. Returns ranked code chunks "
-                "with file path, line range, declarations, and relevance score. "
-                "Use this to find patterns, implementations, and usage examples."
+                "Semantic search over the indexed codebase. Use this to find existing "
+                "patterns, implementations, and usage examples before writing or "
+                "refactoring code. Returns ranked chunks with file path, line range, "
+                "declarations, module, and a qualitative relevance label. Identical "
+                "symbols found in parallel module roots are collapsed to the best match. "
+                "Skip for trivial single-file edits where you already know the location. "
+                "Defaults to a concise view; ask for 'detailed' only when you need more "
+                "of each chunk, and raise top_k to page through more matches."
             ),
             inputSchema={
                 "type": "object",
@@ -57,12 +62,19 @@ async def list_tools() -> list[Tool]:
                     },
                     "top_k": {
                         "type": "integer",
-                        "description": "Number of results to return (default: 10)",
-                        "default": 10,
+                        "description": "Number of results to return (default: 5)",
                     },
                     "module_filter": {
                         "type": "string",
                         "description": "Filter results to a specific module path (e.g. 'features/favorites')",
+                    },
+                    "response_format": {
+                        "type": "string",
+                        "enum": ["concise", "detailed"],
+                        "description": (
+                            "Output verbosity. 'concise' (default) returns compact "
+                            "snippets to save tokens; 'detailed' returns larger snippets."
+                        ),
                     },
                 },
                 "required": ["query"],
@@ -71,17 +83,21 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="get_architecture_context",
             description=(
-                "Returns the project's base architecture context — core classes, patterns, "
-                "and a complete feature exemplar. This is the mandatory context that shows "
-                "how code MUST be structured in this project."
+                "Returns the project's mandatory base architecture — the core classes, "
+                "contracts, and patterns that new or refactored code MUST conform to. "
+                "Call this once before implementing a new feature or making structural "
+                "changes. By default returns base architecture only (token-efficient); "
+                "set include_exemplar=true to also get a complete feature exemplar slice."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "include_exemplar": {
                         "type": "boolean",
-                        "description": "Include full vertical slice exemplar (default: true)",
-                        "default": True,
+                        "description": (
+                            "Also include the full vertical-slice exemplar feature "
+                            "(default: false — base architecture only)."
+                        ),
                     },
                 },
             },
@@ -89,8 +105,10 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="get_module_info",
             description=(
-                "Get information about a specific module — its dependencies, packages, "
-                "file count, and layer structure."
+                "Inspect a single module by any file/dir path inside it: its "
+                "dependencies, packages, file count, and architectural layer "
+                "structure. Use when you need to understand where a module sits and "
+                "what it depends on before adding or moving code into it."
             ),
             inputSchema={
                 "type": "object",
@@ -106,8 +124,10 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="find_feature_module",
             description=(
-                "Find the feature module that matches a given name. Returns module path, "
-                "existing files, and layer coverage (which architectural layers are present)."
+                "Locate the existing feature module for a name and see which "
+                "architectural layers it already has. Call this BEFORE creating a new "
+                "feature to check whether it exists and which layers are missing, so you "
+                "extend rather than duplicate it."
             ),
             inputSchema={
                 "type": "object",
@@ -123,8 +143,10 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="expand_to_siblings",
             description=(
-                "Given a file path, find related architectural siblings. For example, "
-                "given a ViewModel, find its Screen, State, UseCase, Repository, and Service files."
+                "From one source file, find its architectural siblings (e.g. given a "
+                "ViewModel, return its Screen/View, State, UseCase, Repository, Service). "
+                "Use to gather the full vertical slice you must touch when editing one "
+                "layer of a feature."
             ),
             inputSchema={
                 "type": "object",
@@ -140,18 +162,19 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="get_project_overview",
             description=(
-                "Get a high-level overview of the project — platform, module count, "
-                "file count, top-level module tree, and architectural layer distribution."
+                "High-level project map: platform, module/file counts, top-level module "
+                "tree, and layer distribution. Call once at the start of a task to orient "
+                "yourself; prefer search_code or get_module_info for specifics."
             ),
             inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
             name="suggest_mandatory_addition",
             description=(
-                "Suggest adding a file to the mandatory architecture context. "
-                "The file will be included in all future architecture context responses. "
-                "Use this when you notice a frequently-referenced base file that isn't "
-                "already in the mandatory context."
+                "Promote a file into the mandatory architecture context so it appears in "
+                "all future get_architecture_context responses. Use sparingly — only for "
+                "a genuinely core, widely-referenced base file that the auto-detection "
+                "missed."
             ),
             inputSchema={
                 "type": "object",
@@ -185,12 +208,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if name == "search_code":
             result = await engine.search_code(
                 query=arguments["query"],
-                top_k=arguments.get("top_k", 10),
+                top_k=arguments.get("top_k"),
                 module_filter=arguments.get("module_filter"),
+                response_format=arguments.get("response_format"),
             )
         elif name == "get_architecture_context":
             result = await engine.get_architecture_context(
-                include_exemplar=arguments.get("include_exemplar", True),
+                include_exemplar=arguments.get("include_exemplar"),
             )
         elif name == "get_module_info":
             result = await engine.get_module_info(path=arguments["path"])
