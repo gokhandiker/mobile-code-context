@@ -13,14 +13,52 @@ An MCP (Model Context Protocol) server that indexes mobile codebases (Android/iO
 
 ## Installation
 
+### Quick Install (One Command)
+
+From your Android/iOS project root:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/gokhandiker/mobile-code-context/main/scripts/install.sh)
+```
+
+This command will:
+- clone/update `mobile-code-context` into `~/.mobile-code-context`
+- create a dedicated venv and install the package
+- auto-write/merge `.vscode/settings.json` with your current folder as `--repo`
+
+Optional flags:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/gokhandiker/mobile-code-context/main/scripts/install.sh) -- --mode uv
+bash <(curl -fsSL https://raw.githubusercontent.com/gokhandiker/mobile-code-context/main/scripts/install.sh) -- --project /absolute/path/to/project
+```
+
+### Manual Install
+
 ```bash
 # Clone and install
 git clone <repo-url>
 cd mobile-code-context
-pip install -e .
+python3 -m pip install -e .
 
 # Or with uv
 uv pip install -e .
+```
+
+## One-Command VS Code Setup
+
+From your Android/iOS project root, run:
+
+```bash
+python3 /path/to/mobile-code-context/scripts/setup-vscode-mcp.py
+```
+
+This automatically writes/merges `.vscode/settings.json` and sets `--repo` to your current folder.
+
+If you prefer `uv` mode instead of an installed CLI:
+
+```bash
+python3 /path/to/mobile-code-context/scripts/setup-vscode-mcp.py --mode uv
 ```
 
 ## Configuration
