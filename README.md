@@ -25,12 +25,16 @@ This command will:
 - clone/update `mobile-code-context` into `~/.mobile-code-context`
 - create a dedicated venv and install the package
 - auto-write/merge `.vscode/settings.json` with your current folder as `--repo`
+- run an indexing health check and print `INDEX_STATUS: SUCCESS/FAILED`
+
+Installer output includes stage logs (`[1/5] ... [5/5]`) and finishes with `Status: READY`.
 
 Optional flags:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/gokhandiker/mobile-code-context/main/scripts/install.sh) --mode uv
 bash <(curl -fsSL https://raw.githubusercontent.com/gokhandiker/mobile-code-context/main/scripts/install.sh) --project /absolute/path/to/project
+bash <(curl -fsSL https://raw.githubusercontent.com/gokhandiker/mobile-code-context/main/scripts/install.sh) --skip-index-check
 ```
 
 ### Manual Install
