@@ -8,6 +8,9 @@ MODE="pip"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --)
+      shift
+      ;;
     --project)
       PROJECT_DIR="$2"
       shift 2

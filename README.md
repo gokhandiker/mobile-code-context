@@ -29,8 +29,8 @@ This command will:
 Optional flags:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/gokhandiker/mobile-code-context/main/scripts/install.sh) -- --mode uv
-bash <(curl -fsSL https://raw.githubusercontent.com/gokhandiker/mobile-code-context/main/scripts/install.sh) -- --project /absolute/path/to/project
+bash <(curl -fsSL https://raw.githubusercontent.com/gokhandiker/mobile-code-context/main/scripts/install.sh) --mode uv
+bash <(curl -fsSL https://raw.githubusercontent.com/gokhandiker/mobile-code-context/main/scripts/install.sh) --project /absolute/path/to/project
 ```
 
 ### Manual Install
